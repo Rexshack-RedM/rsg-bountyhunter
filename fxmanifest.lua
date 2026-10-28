@@ -4,7 +4,7 @@ game 'rdr3'
 lua54 'yes'
 
 description 'rsg-bountyhunter - hunt wanted outlaws and bring them in dead or alive'
-version '1.0.0'
+version '3.0.0'
 
 shared_scripts {
     '@ox_lib/init.lua',
