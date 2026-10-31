@@ -1,9 +1,9 @@
 local RSGCore = exports['rsg-core']:GetCoreObject()
-lib.locale()
 
 local Board = {}        -- [posterId] = poster
 local Contracts = {}    -- [src] = { poster, expires, warned, netId, foundAt }
-local Cooldowns = {}    -- [src] = os.time() when the next accept is allowed
+local Cooldowns = {}    -- [citizenid] = os.time() when the next accept is allowed (by citizenid so relogging can't skip it)
+local BoardThrottle = {} -- [src] = GetGameTimer() of the last board request
 local nextPosterId = 0
 local leaderboardCache = { rows = {}, at = 0 }
 
@@ -11,7 +11,7 @@ local leaderboardCache = { rows = {}, at = 0 }
 -- helpers
 ---------------------------------
 local function notify(src, desc, ntype)
-    TriggerClientEvent('ox_lib:notify', src, { title = locale('title'), description = desc, type = ntype or 'inform', duration = 7000 })
+    TriggerClientEvent('RSGCore:Client:Notify', src, { title = locale('title'), description = desc, type = ntype or 'inform', duration = 7000 })
 end
 
 local function pick(t) return t[math.random(#t)] end
@@ -108,15 +108,16 @@ end
 -- contracts
 ---------------------------------
 -- removes the contract server-side; reason 'completed' skips the accept cooldown
-local function endContract(src, reason)
+-- silent = don't message the client (it has logged out / disconnected)
+local function endContract(src, reason, silent)
     local c = Contracts[src]
     if not c then return end
     local ent = getTargetEntity(c)
     if ent then DeleteEntity(ent) end
     Board[c.poster.id] = nil
     Contracts[src] = nil
-    Cooldowns[src] = reason ~= 'completed' and (os.time() + Config.AcceptCooldown) or nil
-    TriggerClientEvent('rsg-bountyhunter:client:endContract', src, reason)
+    Cooldowns[c.cid] = reason ~= 'completed' and (os.time() + Config.AcceptCooldown) or nil
+    if not silent then TriggerClientEvent('rsg-bountyhunter:client:endContract', src, reason) end
 end
 
 local function publicContract(c)
@@ -160,27 +161,30 @@ end
 ---------------------------------
 -- callbacks
 ---------------------------------
-lib.callback.register('rsg-bountyhunter:server:getBoard', function(src, officeId)
+RSGCore.Functions.CreateCallback('rsg-bountyhunter:server:getBoard', function(src, cb, officeId)
     local Player = RSGCore.Functions.GetPlayer(src)
-    if not Player then return { error = 'board_error' } end
+    if not Player then return cb({ error = 'board_error' }) end
+    local now = GetGameTimer()
+    if BoardThrottle[src] and now - BoardThrottle[src] < 1000 then return cb(nil) end -- anti-spam (DB reads)
+    BoardThrottle[src] = now
     local office = getOffice(officeId)
     if not office then
         print(('^1[rsg-bountyhunter] unknown office id: %s^7'):format(tostring(officeId)))
-        return { error = 'board_error' }
+        return cb({ error = 'board_error' })
     end
-    if not nearOffice(src, office) then return { error = 'too_far' } end
+    if not nearOffice(src, office) then return cb({ error = 'too_far' }) end
 
-    return {
+    cb({
         office = locale(office.label),
         posters = publicPosters(),
         contract = publicContract(Contracts[src]),
         stats = getStats(Player.PlayerData.citizenid),
         leaderboard = getLeaderboard(),
         canHunt = hasRequiredJob(Player),
-    }
+    })
 end)
 
-lib.callback.register('rsg-bountyhunter:server:accept', function(src, officeId, posterId)
+local function accept(src, officeId, posterId)
     local Player = RSGCore.Functions.GetPlayer(src)
     if not Player then return false end
     local office = getOffice(officeId)
@@ -190,16 +194,17 @@ lib.callback.register('rsg-bountyhunter:server:accept', function(src, officeId, 
     if not hasRequiredJob(Player) then notify(src, locale('not_hunter'), 'error') return false end
     if Contracts[src] then notify(src, locale('already_active'), 'error') return false end
 
+    local cid = Player.PlayerData.citizenid
     local now = os.time()
-    if Cooldowns[src] and Cooldowns[src] > now then
-        notify(src, locale('cooldown', Cooldowns[src] - now), 'error')
+    if Cooldowns[cid] and Cooldowns[cid] > now then
+        notify(src, locale('cooldown', Cooldowns[cid] - now), 'error')
         return false
     end
 
     local poster = Board[posterId]
     if not poster or poster.taken then notify(src, locale('poster_gone'), 'error') return false end
     poster.taken = true
-    Contracts[src] = { poster = poster, expires = now + Config.ContractMinutes * 60 }
+    Contracts[src] = { poster = poster, cid = cid, expires = now + Config.ContractMinutes * 60 }
     fillBoard(false)
 
     local tier = Config.Tiers[poster.tier]
@@ -221,10 +226,14 @@ lib.callback.register('rsg-bountyhunter:server:accept', function(src, officeId, 
         { name = locale('wh_time_limit'), value = locale('wh_minutes', Config.ContractMinutes) },
     }))
     return true
+end
+
+RSGCore.Functions.CreateCallback('rsg-bountyhunter:server:accept', function(src, cb, officeId, posterId)
+    cb(accept(src, officeId, posterId))
 end)
 
-lib.callback.register('rsg-bountyhunter:server:abandon', function(src)
-    return abandon(src)
+RSGCore.Functions.CreateCallback('rsg-bountyhunter:server:abandon', function(src, cb)
+    cb(abandon(src))
 end)
 
 -- the hunter's client spawns the networked target and registers it here.
@@ -256,7 +265,7 @@ RegisterNetEvent('rsg-bountyhunter:server:registerTarget', function(netId)
     c.foundAt = os.time()
 end)
 
-lib.callback.register('rsg-bountyhunter:server:turnIn', function(src, officeId)
+local function turnIn(src, officeId)
     local Player = RSGCore.Functions.GetPlayer(src)
     if not Player then return false end
     local office = getOffice(officeId)
@@ -278,8 +287,8 @@ lib.callback.register('rsg-bountyhunter:server:turnIn', function(src, officeId)
         notify(src, locale('target_not_here'), 'error')
         return false
     end
-    if os.time() - (c.foundAt or 0) < Config.MinHuntSeconds then
-        local secs = os.time() - (c.foundAt or 0)
+    local secs = os.time() - c.foundAt
+    if secs < Config.MinHuntSeconds then
         print(('^3[rsg-bountyhunter] %s turned in a target %ss after finding it (possible teleport exploit)^7'):format(src, secs))
         BountyLog.Event('exploit', src, { { name = locale('wh_check'), value = locale('wh_check_min_hunt') }, { name = locale('wh_target'), value = c.poster.name } },
             locale('wh_reason_instant', secs, Config.MinHuntSeconds))
@@ -296,7 +305,7 @@ lib.callback.register('rsg-bountyhunter:server:turnIn', function(src, officeId)
         { name = locale('wh_condition'), value = locale(alive and 'ui_alive' or 'ui_dead') },
         { name = locale('wh_paid'), value = ('$%s (%s)'):format(amount, Config.MoneyType) },
         { name = locale('wh_office'), value = locale(office.label) },
-        { name = locale('wh_hunt_time'), value = locale('wh_minutes', math.floor((os.time() - (c.foundAt or os.time())) / 60)) },
+        { name = locale('wh_hunt_time'), value = locale('wh_minutes', math.floor(secs / 60)) },
     })
 
     endContract(src, 'completed') -- clears the contract before paying so it can't be claimed twice
@@ -313,6 +322,10 @@ lib.callback.register('rsg-bountyhunter:server:turnIn', function(src, officeId)
     BountyLog.Event('completed', src, logFields,
         locale(alive and 'wh_turned_in_alive' or 'wh_turned_in_dead', charName, cid, name, amount))
     return true
+end
+
+RSGCore.Functions.CreateCallback('rsg-bountyhunter:server:turnIn', function(src, cb, officeId)
+    cb(turnIn(src, officeId))
 end)
 
 ---------------------------------
@@ -370,25 +383,16 @@ CreateThread(function()
     end
 end)
 
-local function dropContract(src)
-    local c = Contracts[src]
-    if c then
-        local ent = getTargetEntity(c)
-        if ent then DeleteEntity(ent) end
-        Board[c.poster.id] = nil
-        Contracts[src] = nil
-    end
-end
-
--- character logout / switch: the client loses its contract state, so drop it server-side too
+-- character logout / switch / disconnect: the client loses its contract state, so drop it server-side too.
+-- counts as an abandon (cooldown applies) so relogging can't be used to re-roll contracts.
 AddEventHandler('RSGCore:Server:OnPlayerUnload', function(src)
-    dropContract(src)
+    endContract(src, 'abandoned', true)
 end)
 
 AddEventHandler('playerDropped', function()
     local src = source
-    dropContract(src)
-    Cooldowns[src] = nil
+    endContract(src, 'abandoned', true)
+    BoardThrottle[src] = nil
 end)
 
 AddEventHandler('onResourceStop', function(res)

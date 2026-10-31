@@ -3,7 +3,7 @@
 Bounty hunting for RSG Framework (RedM). Take a wanted poster from the clerk at any sheriff's office, track the outlaw to their hideout, and bring them in dead or alive.
 
 ## Features
-- Clerk NPC at each sheriff's office (ox_target): **View Bounties** and **Turn In Bounty**
+- Clerk NPC at each sheriff's office (rsg-target): **View Bounties** and **Turn In Bounty**
 - NUI wanted board in the RSG leather & gold style: tiered posters (Petty / Wanted / Notorious) with random names, crimes and rewards
 - The board re-rolls on a timer, and a poster someone has taken disappears for everyone else
 - A search-area blip on the map; the outlaw and their gang spawn when you get close
@@ -23,10 +23,11 @@ Bounty hunting for RSG Framework (RedM). Take a wanted poster from the clerk at 
 - On turn-in, the server checks that the target ped is within `Config.DeliverRadius` of the office and reads whether it's alive or dead itself.
 - `Config.MinHuntSeconds` blocks instant turn-ins (for example, teleporting the ped to the office). Attempts are printed to the console.
 - The contract is removed before payment, so it can't be claimed twice.
-- Contracts are cleared on character logout or disconnect.
+- Contracts are cleared on character logout or disconnect, and that counts as an abandon: the cooldown is tracked per character, so relogging can't be used to re-roll contracts.
+- Opening the board is rate-limited per player to stop database spam.
 
 ## Install
-1. Drop `rsg-bountyhunter` into your resources and `ensure rsg-bountyhunter` after rsg-core, ox_lib, ox_target and oxmysql.
+1. Drop `rsg-bountyhunter` into your resources and `ensure rsg-bountyhunter` after rsg-core, rsg-target and oxmysql. ox_lib is not required.
 2. The `rsg_bountyhunter` table is created on start (`install.sql` is included as a manual fallback).
 3. Optional: add your Discord webhook URLs in `server/sv_config.lua`.
 4. Set your own hideout coords in `Config.Hideouts` (the shipped ones are only examples) and tune the clerk positions in `Config.Offices`.
@@ -51,10 +52,11 @@ Set up in `server/sv_config.lua` (server only, so your URLs never reach clients)
 ## Languages
 Included: `en`, `de`, `el`, `es`, `fr`, `ja`, `nl`, `pl`, `pt-br`, `ro` (in `locales/`).
 
-The language follows ox_lib's server setting. Put this in your `server.cfg`, for example:
+Locales are loaded by rsg-core. Set the language in your `server.cfg`, for example:
 ```
-setr ox:locale de
+setr rsg:locale de
 ```
+(falls back to `ox:locale`, then `en`).
 Tier labels, crimes and office names in `shared/config.lua` are locale keys (`tier_petty`, `crime_murder`, `office_valentine`...). To add your own, add the key to every locale file. Outlaw first and last names are proper nouns and stay in the config.
 
 ## Config highlights
@@ -74,6 +76,6 @@ Tier labels, crimes and office names in `shared/config.lua` are locale keys (`ti
 - **"The bounty board is unavailable"**: check the server console for a red database error.
 
 ## Dependencies
-rsg-core, ox_lib, ox_target, oxmysql
+rsg-core, rsg-target, oxmysql
 
 Support: https://buymeacoffee.com/rexshack

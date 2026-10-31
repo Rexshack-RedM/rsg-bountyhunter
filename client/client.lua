@@ -1,4 +1,4 @@
-lib.locale()
+local RSGCore = exports['rsg-core']:GetCoreObject()
 
 local clerks = {}        -- [officeId] = ped
 local officeBlips = {}
@@ -55,7 +55,7 @@ local function groundZ(x, y, z)
 end
 
 local function notify(desc, ntype, duration)
-    lib.notify({ title = locale('title'), description = desc, type = ntype, duration = duration or 7000 })
+    RSGCore.Functions.Notify({ title = locale('title'), description = desc, type = ntype, duration = duration or 7000 })
 end
 
 ---------------------------------
@@ -106,7 +106,7 @@ end
 local function spawnOutlaws()
     local h = contract.hideout
     local z = groundZ(h.x, h.y, h.z)
-    if not contract then return end -- contract may have ended while collision loaded
+    if not contract or target then return end -- contract may have ended while collision loaded
 
     target = spawnOutlaw(contract.model, h.x, h.y, z, contract.behaviour)
     if not target then return end
@@ -161,7 +161,9 @@ CreateThread(function()
             local pcoords = GetEntityCoords(PlayerPedId())
             if not target then
                 if #(pcoords - contract.hideout) <= Config.SpawnDistance then spawnOutlaws() end
-            elseif DoesEntityExist(target) then
+            elseif not DoesEntityExist(target) then
+                removeBlip(targetBlip); targetBlip = nil
+            else
                 sleep = 1000
                 if not targetBlip and #(pcoords - GetEntityCoords(target)) <= Config.TargetBlipDistance then
                     removeBlip(areaBlip); areaBlip = nil
@@ -200,7 +202,8 @@ local function closeUI()
 end
 
 local function openBoard(officeId)
-    local data = lib.callback.await('rsg-bountyhunter:server:getBoard', false, officeId)
+    if uiOpen then return end
+    local data = RSGCore.Functions.AwaitCallback('rsg-bountyhunter:server:getBoard', 5000, officeId)
     if not data or data.error then
         notify(locale(data and data.error or 'board_error'), 'error')
         return
@@ -218,19 +221,19 @@ end
 RegisterNUICallback('close', function(_, cb) closeUI(); cb({}) end)
 
 RegisterNUICallback('accept', function(body, cb)
-    local ok = lib.callback.await('rsg-bountyhunter:server:accept', false, currentOffice, body.id)
-    cb({ ok = ok })
+    local ok = RSGCore.Functions.AwaitCallback('rsg-bountyhunter:server:accept', 5000, currentOffice, body.id)
+    cb({ ok = ok == true })
     if ok then closeUI() end
 end)
 
 RegisterNUICallback('abandon', function(_, cb)
-    local ok = lib.callback.await('rsg-bountyhunter:server:abandon', false)
-    cb({ ok = ok })
+    local ok = RSGCore.Functions.AwaitCallback('rsg-bountyhunter:server:abandon', 5000)
+    cb({ ok = ok == true })
     if ok then closeUI() end
 end)
 
 ---------------------------------
--- clerks, blips, ox_target
+-- clerks, blips, rsg-target
 ---------------------------------
 local function spawnClerk(office)
     local hash = loadModel(Config.ClerkModel)
@@ -245,7 +248,7 @@ local function spawnClerk(office)
     SetBlockingOfNonTemporaryEvents(ped, true)
     clerks[office.id] = ped
 
-    exports.ox_target:addLocalEntity(ped, {
+    exports['rsg-target']:addLocalEntity(ped, {
         {
             name = 'bh_board',
             label = locale('view_bounties'),
@@ -259,13 +262,13 @@ local function spawnClerk(office)
             icon = 'fa-solid fa-handcuffs',
             distance = Config.InteractDistance,
             canInteract = function() return contract ~= nil end,
-            onSelect = function() lib.callback.await('rsg-bountyhunter:server:turnIn', false, office.id) end,
+            onSelect = function() RSGCore.Functions.TriggerCallback('rsg-bountyhunter:server:turnIn', function() end, office.id) end,
         },
     })
 end
 
 local function removeClerk(id)
-    exports.ox_target:removeLocalEntity(clerks[id])
+    exports['rsg-target']:removeLocalEntity(clerks[id])
     deletePed(clerks[id])
     clerks[id] = nil
 end

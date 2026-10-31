@@ -15,7 +15,7 @@ Config.AcceptCooldown      = 120     -- seconds before another contract can be t
 Config.MinHuntSeconds      = 60      -- anti-exploit: minimum time between finding the target and turning it in
 Config.AbandonCommand      = 'abandonbounty' -- abandon the current contract from anywhere, false to disable
 
-Config.InteractDistance    = 3.0     -- ox_target reach to the clerk
+Config.InteractDistance    = 3.0     -- rsg-target reach to the clerk
 Config.ServerCheckDistance = 10.0    -- server-side radius around the office coords (keep larger than InteractDistance)
 Config.DeliverRadius       = 12.0    -- target must be within this distance of the office to turn in
 Config.ClerkSpawnDistance  = 60.0    -- clerk peds only exist while a player is this close

@@ -2,7 +2,6 @@
 -- Usage from server.lua: BountyLog.Event(eventName, src, fields, extraDescription)
 
 local RSGCore = exports['rsg-core']:GetCoreObject()
-lib.locale()
 local W = SvConfig.Webhooks
 
 BountyLog = {}
@@ -179,7 +178,11 @@ if W.TestCommand then
                 sent = sent + 1
             end
         end
-        TriggerClientEvent('ox_lib:notify', source, { title = locale('title'), description = locale('webhook_test_sent', sent), type = sent > 0 and 'success' or 'error' })
+        if source > 0 then
+            TriggerClientEvent('RSGCore:Client:Notify', source, { title = locale('title'), description = locale('webhook_test_sent', sent), type = sent > 0 and 'success' or 'error', duration = 7000 })
+        else
+            print(('[rsg-bountyhunter] sent %s webhook test message(s)'):format(sent))
+        end
     end, 'admin')
 end
 
