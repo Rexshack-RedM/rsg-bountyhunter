@@ -104,4 +104,4 @@ The server owns the board and contracts. It checks distance to the clerk, the jo
 | Turn-in refused | Target must be within `DeliverRadius` of the office and the hunt long enough |
 | Poster gone | Another hunter took it, or the board re-rolled |
 
-Support: https://buymeacoffee.com/rexshack
+Support the Project : https://rexshack.tebex.store/
