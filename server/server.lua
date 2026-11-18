@@ -346,6 +346,7 @@ end
 -- database: created automatically on start (install.sql kept as a manual fallback)
 ---------------------------------
 MySQL.ready(function()
+    if Config.AutoDatabase == false then return end -- manual install: import install.sql
     local ok = dbCall(MySQL.query.await, [[
         CREATE TABLE IF NOT EXISTS `rsg_bountyhunter` (
             `citizenid` VARCHAR(50) NOT NULL,
