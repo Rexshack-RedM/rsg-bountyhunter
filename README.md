@@ -78,4 +78,9 @@ Tier labels, crimes and office names in `shared/config.lua` are locale keys (`ti
 ## Dependencies
 rsg-core, rsg-target, oxmysql
 
+## rsg-reputation integration
+
+Optional. With `rsg-reputation` started, a delivered bounty applies the `bounty_delivered` action (honor and standing in the town of the office you turned the target in at). Set `Config.Reputation.Enabled = false` to turn it off. Office ids map to reputation regions through `Config.Reputation.Regions`.
+
+
 Support the Project : https://rexshack.tebex.store/

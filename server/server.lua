@@ -319,6 +319,11 @@ local function turnIn(src, officeId)
     leaderboardCache.at = 0
 
     notify(src, locale(alive and 'paid_alive' or 'paid_dead', name, amount), 'success')
+
+    -- rsg-reputation (optional): honor and standing in the town of the office
+    if Config.Reputation.Enabled and GetResourceState('rsg-reputation') == 'started' then
+        exports['rsg-reputation']:ApplyAction(src, Config.Reputation.Action, Config.Reputation.Regions[office.id] or office.id)
+    end
     BountyLog.Event('completed', src, logFields,
         locale(alive and 'wh_turned_in_alive' or 'wh_turned_in_dead', charName, cid, name, amount))
     return true

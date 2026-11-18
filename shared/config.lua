@@ -100,3 +100,11 @@ Config.Crimes = {
     [2] = { 'crime_armed_robbery', 'crime_stagecoach_robbery', 'crime_murder', 'crime_jailbreak' },
     [3] = { 'crime_train_robbery', 'crime_bank_robbery', 'crime_multiple_murders', 'crime_killing_lawman' },
 }
+
+-- rsg-reputation integration (optional). Needs the rsg-reputation resource; does nothing when it is not started.
+Config.Reputation = {
+    Enabled = true,
+    Action  = 'bounty_delivered', -- action name in rsg-reputation's Config.Actions
+    -- office id -> rsg-reputation region id (an id that is not listed here is used as it is)
+    Regions = { saintdenis = 'saint_denis' },
+}

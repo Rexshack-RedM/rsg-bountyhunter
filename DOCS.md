@@ -1,4 +1,4 @@
-# rsg-bountyhunter – Docs (v3.0.1)
+# rsg-bountyhunter – Docs (v3.1.0)
 
 ## Contents
 1. Files
@@ -103,5 +103,10 @@ The server owns the board and contracts. It checks distance to the clerk, the jo
 | Can't accept | Cooldown after abandon/fail, or a job lock |
 | Turn-in refused | Target must be within `DeliverRadius` of the office and the hunt long enough |
 | Poster gone | Another hunter took it, or the board re-rolled |
+
+## rsg-reputation integration
+
+`Config.Reputation = { Enabled, Action, Regions }`. After the server has paid the reward in `turnIn`, it calls `exports['rsg-reputation']:ApplyAction(src, Action, region)` where `region = Regions[office.id] or office.id`. The default `saintdenis` office id is mapped to `saint_denis`. The honor and standing amounts live in rsg-reputation's `Config.Actions`. Skipped when rsg-reputation is not started.
+
 
 Support the Project : https://rexshack.tebex.store/
