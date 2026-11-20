@@ -114,5 +114,7 @@
     "rep_target_jailed": "%s has been jailed. The contract is cancelled.",
     "rep_not_secured": "The target must be dead, hogtied or cuffed at the office.",
     "rep_own_bounty": "You cannot hunt yourself.",
-    "rep_same_gang": "You cannot take a bounty on a member of your own gang."
+    "rep_same_gang": "You cannot take a bounty on a member of your own gang.",
+    "crime_sponsored_bounty": "Wanted by a gang",
+    "gang_own_bounty": "You cannot take a bounty posted by your own gang."
 }

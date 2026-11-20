@@ -114,5 +114,7 @@
     "rep_target_jailed": "%s is opgesloten. Het contract is geannuleerd.",
     "rep_not_secured": "Het doelwit moet dood, vastgebonden of geboeid op het kantoor zijn.",
     "rep_own_bounty": "Je kunt niet op jezelf jagen.",
-    "rep_same_gang": "Je kunt geen premie aannemen op een lid van je eigen bende."
+    "rep_same_gang": "Je kunt geen premie aannemen op een lid van je eigen bende.",
+    "crime_sponsored_bounty": "Gezocht door een bende",
+    "gang_own_bounty": "Je kunt geen premie aannemen die je eigen bende heeft uitgeschreven."
 }

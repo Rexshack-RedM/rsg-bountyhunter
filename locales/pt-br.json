@@ -114,5 +114,7 @@
     "rep_target_jailed": "%s foi preso. O contrato foi cancelado.",
     "rep_not_secured": "O alvo deve estar morto, amarrado ou algemado no escritório.",
     "rep_own_bounty": "Você não pode caçar a si mesmo.",
-    "rep_same_gang": "Você não pode aceitar uma recompensa sobre um membro da sua própria gangue."
+    "rep_same_gang": "Você não pode aceitar uma recompensa sobre um membro da sua própria gangue.",
+    "crime_sponsored_bounty": "Procurado por uma gangue",
+    "gang_own_bounty": "Você não pode aceitar uma recompensa colocada pela sua própria gangue."
 }

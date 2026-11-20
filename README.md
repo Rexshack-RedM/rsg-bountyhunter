@@ -26,6 +26,7 @@ Bounty hunting for RSG Framework (RedM). Take a wanted poster from the clerk at 
 - The contract is removed before payment, so it can't be claimed twice.
 - Contracts are cleared on character logout or disconnect, and that counts as an abandon: the cooldown is tracked per character, so relogging can't be used to re-roll contracts.
 - Opening the board is rate-limited per player to stop database spam.
+- Gang bounties (needs rsg-gangs 3.4.0+): a gang can post a bounty on one player or on a rival gang. Hunters follow a moving search area and bring the player (or any online member of the gang) to an office dead, hogtied or cuffed. A gang cannot take its own bounty. See `PostBounty` in DOCS.md.
 - Reputation bounties are decided and paid by the server: the target must be within `DeliverRadius` of the office and secured (dead or cuffed from server data, hogtied from the target's own client), the hunt must last `MinHuntSeconds`, you cannot hunt yourself or (by default) your own gang, and a collected player cannot be re-posted for `RepostCooldownMinutes`.
 
 ## Install

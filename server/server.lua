@@ -61,6 +61,30 @@ local function getTargetEntity(c)
     if ent and ent ~= 0 and DoesEntityExist(ent) then return ent end
 end
 
+-- Gang membership lives in rsg-gangs (its own table), not in the core gang field.
+local function gangNameOf(Player)
+    local cid = Player and Player.PlayerData and Player.PlayerData.citizenid
+    if cid and GetResourceState('rsg-gangs') == 'started' then
+        local ok, g = pcall(function() return exports['rsg-gangs']:GetPlayerGang(cid) end)
+        if ok and g and g.name then return g.name end
+    end
+    local g = Player and Player.PlayerData and Player.PlayerData.gang
+    if g and g.name and g.name ~= 'none' then return g.name end
+end
+
+-- online players of a gang (used by gang-targeted bounties)
+local function onlineGangMembers(name)
+    local out = {}
+    if not name or GetResourceState('rsg-gangs') ~= 'started' then return out end
+    local ok, sources = pcall(function() return exports['rsg-gangs']:GetGangOnlineSources(name) end)
+    if not ok or type(sources) ~= 'table' then return out end
+    for _, psrc in ipairs(sources) do
+        local P = RSGCore.Functions.GetPlayer(psrc)
+        if P then out[#out + 1] = P end
+    end
+    return out
+end
+
 ---------------------------------
 -- board
 ---------------------------------
@@ -101,7 +125,7 @@ local function publicPosters()
         if not p.taken then
             out[#out + 1] = {
                 id = p.id, tier = p.tier, tierLabel = locale(Config.Tiers[p.tier].label),
-                name = p.name, crime = (p.sponsored and not p.playerTarget) and ('%s (%s)'):format(locale(p.crime), p.sponsor) or locale(p.crime), rewardAlive = p.rewardAlive, rewardDead = p.rewardDead,
+                name = p.name, crime = (p.sponsored and p.ref) and ('%s (%s)'):format(locale(p.crime), p.sponsor) or locale(p.crime), rewardAlive = p.rewardAlive, rewardDead = p.rewardDead,
             }
         end
     end
@@ -222,27 +246,36 @@ local function accept(src, officeId, posterId)
     local poster = Board[posterId]
     if not poster or poster.taken then notify(src, locale('poster_gone'), 'error') return false end
 
-    -- reputation poster: the target is a real player
+    -- player / gang poster: the target is a real player (reputation bounty or a gang-sponsored bounty)
     local targetPlayer
+    local hunterGang = gangNameOf(Player)
+    if poster.sponsorGang and hunterGang == poster.sponsorGang then
+        notify(src, locale('gang_own_bounty'), 'error')
+        return false
+    end
     if poster.playerTarget then
         if poster.playerTarget == cid then notify(src, locale('rep_own_bounty'), 'error') return false end
         targetPlayer = RSGCore.Functions.GetPlayerByCitizenId(poster.playerTarget)
         if not targetPlayer then notify(src, locale('poster_gone'), 'error') return false end
-        local g, tg = Player.PlayerData.gang, targetPlayer.PlayerData.gang
-        if RepCfg.BlockSameGang and g and tg and g.name and g.name ~= 'none' and g.name == tg.name then
+        local tg = gangNameOf(targetPlayer)
+        if (RepCfg.BlockSameGang or poster.sponsored) and hunterGang and tg and hunterGang == tg then
             notify(src, locale('rep_same_gang'), 'error')
             return false
         end
+    elseif poster.targetGang then
+        if hunterGang == poster.targetGang then notify(src, locale('rep_same_gang'), 'error') return false end
+        if #onlineGangMembers(poster.targetGang) == 0 then notify(src, locale('poster_gone'), 'error') return false end
     end
 
     poster.taken = true
     Contracts[src] = { poster = poster, cid = cid, expires = now + Config.ContractMinutes * 60 }
     fillBoard(false)
 
-    if poster.playerTarget then
+    if poster.playerTarget or poster.targetGang then
         local c = Contracts[src]
         local r = math.floor((RepCfg.TrackRadius or 250.0) * 0.5)
         c.playerTarget = poster.playerTarget
+        c.gangTarget = poster.targetGang
         c.startedAt = now
         c.offX, c.offY = math.random(-r, r), math.random(-r, r) -- fixed offset so the area isn't centred on the target
         c.nextTrack = 0 -- the expiry loop sends the first search area within a few seconds
@@ -396,21 +429,40 @@ local function repTargetCondition(tsrc, TPlayer)
     return nil
 end
 
+-- online players a player / gang contract can be satisfied with
+local function targetCandidates(c)
+    if c.playerTarget then
+        local P = RSGCore.Functions.GetPlayerByCitizenId(c.playerTarget)
+        return P and { P } or {}
+    end
+    return onlineGangMembers(c.gangTarget)
+end
+
 local function turnInPlayer(src, Player, office, c)
-    local targetCid = c.playerTarget
-    local TPlayer = RSGCore.Functions.GetPlayerByCitizenId(targetCid)
-    if not TPlayer then
-        closeRepPoster(targetCid, 'left')
+    local isRep = c.poster.ref == nil -- reputation posters have no sponsor ref
+    local candidates = targetCandidates(c)
+    if #candidates == 0 then
+        if c.playerTarget and isRep then closeRepPoster(c.playerTarget, 'left') end
+        notify(src, locale('target_not_here'), 'error')
         return false
     end
-    local tsrc = TPlayer.PlayerData.source
-    if RepCfg.SkipJailed and flag(TPlayer.PlayerData.metadata and TPlayer.PlayerData.metadata.injail) then
-        closeRepPoster(targetCid, 'jailed')
+    if isRep and RepCfg.SkipJailed and flag(candidates[1].PlayerData.metadata and candidates[1].PlayerData.metadata.injail) then
+        closeRepPoster(c.playerTarget, 'jailed')
         return false
     end
 
-    local tped = GetPlayerPed(tsrc)
-    if not tped or tped == 0 or #(GetEntityCoords(tped) - office.coords.xyz) > Config.DeliverRadius then
+    -- every candidate at the office is checked; the first one that is secured is the one turned in
+    local here = {}
+    for _, cand in ipairs(candidates) do
+        local meta = cand.PlayerData.metadata
+        local csrc = cand.PlayerData.source
+        local cped = GetPlayerPed(csrc)
+        local jailed = RepCfg.SkipJailed and flag(meta and meta.injail)
+        if not jailed and cped and cped ~= 0 and #(GetEntityCoords(cped) - office.coords.xyz) <= Config.DeliverRadius then
+            here[#here + 1] = cand
+        end
+    end
+    if #here == 0 then
         notify(src, locale('target_not_here'), 'error')
         return false
     end
@@ -421,11 +473,16 @@ local function turnInPlayer(src, Player, office, c)
         notify(src, locale('target_not_here'), 'error')
         return false
     end
-    local condition = repTargetCondition(tsrc, TPlayer)
-    if not condition then
+    local TPlayer, tsrc, condition
+    for _, cand in ipairs(here) do
+        local cond = repTargetCondition(cand.PlayerData.source, cand)
+        if cond then TPlayer, tsrc, condition = cand, cand.PlayerData.source, cond break end
+    end
+    if not TPlayer then
         notify(src, locale('rep_not_secured'), 'error')
         return false
     end
+    local targetCid = TPlayer.PlayerData.citizenid
     if not RSGCore.Functions.GetPlayerByCitizenId(targetCid) or Contracts[src] ~= c then return false end -- changed while waiting on the client
 
     local alive = condition == 'alive'
@@ -440,13 +497,17 @@ local function turnInPlayer(src, Player, office, c)
         { name = locale('wh_hunt_time'), value = locale('wh_minutes', math.floor(secs / 60)) },
     })
 
+    local closedPoster = c.poster
     endContract(src, 'completed') -- clears the contract and the poster before paying so it can't be claimed twice
-    RepPosters[targetCid] = nil
-    RepCooldowns[targetCid] = os.time() + (RepCfg.RepostCooldownMinutes or 120) * 60
+    if isRep then
+        RepPosters[targetCid] = nil
+        RepCooldowns[targetCid] = os.time() + (RepCfg.RepostCooldownMinutes or 120) * 60
+    end
     Player.Functions.AddMoney(Config.MoneyType, amount, 'rsg-bountyhunter-reward')
+    if closedPoster.ref then TriggerEvent('rsg-bountyhunter:server:posterClosed', closedPoster.ref, 'completed', amount) end
     recordStats(cid, charName, alive, amount)
     notify(src, locale(alive and 'paid_alive' or 'paid_dead', name, amount), 'success')
-    if RepCfg.NotifyTarget then notify(tsrc, locale('rep_collected'), 'warning') end
+    if RepCfg.NotifyTarget ~= false then notify(tsrc, locale('rep_collected'), 'warning') end
 
     if Config.Reputation.Enabled and GetResourceState('rsg-reputation') == 'started' then
         exports['rsg-reputation']:ApplyAction(src, Config.Reputation.Action, Config.Reputation.Regions[office.id] or office.id)
@@ -465,7 +526,7 @@ local function turnIn(src, officeId)
 
     local c = Contracts[src]
     if not c then notify(src, locale('no_contract'), 'error') return false end
-    if c.playerTarget then return turnInPlayer(src, Player, office, c) end
+    if c.playerTarget or c.gangTarget then return turnInPlayer(src, Player, office, c) end
     if not c.netId then notify(src, locale('target_not_here'), 'error') return false end
 
     local ent = getTargetEntity(c)
@@ -577,20 +638,22 @@ CreateThread(function()
                 TriggerEvent('rsg-bountyhunter:server:posterClosed', p.ref, 'expired', 0)
             end
         end
-        if RepCfg.Enabled then
-            -- the hunter's search area follows the target (offset, so it never points at the exact spot)
-            for hsrc, c in pairs(Contracts) do
-                if c.playerTarget and now >= (c.nextTrack or 0) then
-                    c.nextTrack = now + math.max(15, RepCfg.TrackSeconds or 30)
-                    local TPlayer = RSGCore.Functions.GetPlayerByCitizenId(c.playerTarget)
-                    local tped = TPlayer and GetPlayerPed(TPlayer.PlayerData.source)
-                    if tped and tped ~= 0 then
-                        local pos = GetEntityCoords(tped)
-                        TriggerClientEvent('rsg-bountyhunter:client:trackArea', hsrc,
-                            { x = pos.x + c.offX, y = pos.y + c.offY, z = pos.z, radius = RepCfg.TrackRadius or 250.0 })
-                    end
+        -- the hunter's search area follows the target (offset, so it never points at the exact spot);
+        -- covers reputation bounties and gang-sponsored player / gang bounties
+        for hsrc, c in pairs(Contracts) do
+            if (c.playerTarget or c.gangTarget) and now >= (c.nextTrack or 0) then
+                c.nextTrack = now + math.max(15, RepCfg.TrackSeconds or 30)
+                local cands = targetCandidates(c)
+                local TPlayer = cands[1] and cands[math.random(#cands)]
+                local tped = TPlayer and GetPlayerPed(TPlayer.PlayerData.source)
+                if tped and tped ~= 0 then
+                    local pos = GetEntityCoords(tped)
+                    TriggerClientEvent('rsg-bountyhunter:client:trackArea', hsrc,
+                        { x = pos.x + c.offX, y = pos.y + c.offY, z = pos.z, radius = RepCfg.TrackRadius or 250.0 })
                 end
             end
+        end
+        if RepCfg.Enabled then
             -- re-check everyone: jail, honor decay and cooldown changes raise no honor event
             if now - lastSweep >= (RepCfg.SweepSeconds or 60) then
                 lastSweep = now
@@ -607,7 +670,9 @@ end)
 
 -- Server export: another resource sponsors a poster. The caller escrows the money and listens for
 -- 'rsg-bountyhunter:server:posterClosed' (ref, 'completed' | 'expired', paid) to settle it.
--- opts = { ref = any unique value, reward = alive reward, sponsor = text shown on the poster, expireMinutes = n }
+-- opts = { ref = any unique value, reward = alive reward, sponsor = text shown on the poster, expireMinutes = n,
+--          targetCitizenid = bounty on one player, OR targetGang = bounty on any online member of an rsg-gangs gang,
+--          targetName = name shown on the board, sponsorGang = gang name that cannot take its own bounty }
 exports('PostBounty', function(opts)
     if type(opts) ~= 'table' or opts.ref == nil then return nil end
     local reward = math.floor(tonumber(opts.reward) or 0)
@@ -620,6 +685,19 @@ exports('PostBounty', function(opts)
     poster.sponsor = tostring(opts.sponsor or '?'):sub(1, 40)
     poster.ref = opts.ref
     poster.expiresAt = os.time() + math.max(1, tonumber(opts.expireMinutes) or 360) * 60
+    if opts.targetCitizenid or opts.targetGang then
+        -- the poster names a real target: one player, or any online member of a gang
+        poster.tier = 3
+        poster.rewardDead = math.floor(reward * Config.Tiers[3].deadMultiplier)
+        poster.crime = 'crime_sponsored_bounty'
+        poster.name = tostring(opts.targetName or '?'):sub(1, 60)
+        poster.sponsorGang = opts.sponsorGang and tostring(opts.sponsorGang) or nil
+        if opts.targetCitizenid then
+            poster.playerTarget = tostring(opts.targetCitizenid)
+        else
+            poster.targetGang = tostring(opts.targetGang)
+        end
+    end
     Board[poster.id] = poster
     return poster.id
 end)

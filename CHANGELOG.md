@@ -2,6 +2,14 @@
 
 All notable changes to rsg-bountyhunter. Newest first.
 
+## 3.4.0
+
+### Added
+- `PostBounty` accepts `targetCitizenid` (a bounty on one player) or `targetGang` (a bounty on any online member of an rsg-gangs gang), plus `targetName` and `sponsorGang`. Used by rsg-gangs so a gang can post a bounty on a player or a rival gang.
+- Sponsored player and gang bounties use the same moving search area and dead / hogtied / cuffed turn-in as reputation bounties, and no longer need `Config.ReputationBounty.Enabled`.
+- A gang cannot take its own bounty; hunters cannot take a bounty on their own gang.
+- New locale keys `crime_sponsored_bounty` and `gang_own_bounty` in all 11 languages.
+
 ## 3.3.0
 
 ### Added

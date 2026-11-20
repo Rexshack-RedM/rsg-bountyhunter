@@ -114,5 +114,7 @@
     "rep_target_jailed": "%sは投獄された。契約は取り消された。",
     "rep_not_secured": "標的は保安官事務所で死亡、縛られているか手錠をかけられている必要がある。",
     "rep_own_bounty": "自分自身を追うことはできない。",
-    "rep_same_gang": "自分のギャングのメンバーの賞金は受けられない。"
+    "rep_same_gang": "自分のギャングのメンバーの賞金は受けられない。",
+    "crime_sponsored_bounty": "ギャングによる賞金首",
+    "gang_own_bounty": "自分のギャングが掛けた賞金は受けられません。"
 }
