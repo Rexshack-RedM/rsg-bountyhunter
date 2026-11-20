@@ -5,6 +5,9 @@ local Contracts = {}    -- [src] = { poster, expires, warned, netId, foundAt }
 local Cooldowns = {}    -- [citizenid] = os.time() when the next accept is allowed (by citizenid so relogging can't skip it)
 local BoardThrottle = {} -- [src] = GetGameTimer() of the last board request
 local nextPosterId = 0
+local RepCfg = Config.ReputationBounty or { Enabled = false }
+local RepPosters = {}   -- [citizenid] = { id = posterId, src = source } reputation posters currently on the board
+local RepCooldowns = {} -- [citizenid] = os.time() until which no new reputation poster is made
 local leaderboardCache = { rows = {}, at = 0 }
 
 ---------------------------------
@@ -15,6 +18,8 @@ local function notify(src, desc, ntype)
 end
 
 local function pick(t) return t[math.random(#t)] end
+
+local function flag(v) return v == true or (type(v) == 'number' and v ~= 0) end
 
 local function getOffice(id)
     for _, o in ipairs(Config.Offices) do
@@ -96,7 +101,7 @@ local function publicPosters()
         if not p.taken then
             out[#out + 1] = {
                 id = p.id, tier = p.tier, tierLabel = locale(Config.Tiers[p.tier].label),
-                name = p.name, crime = p.sponsored and ('%s (%s)'):format(locale(p.crime), p.sponsor) or locale(p.crime), rewardAlive = p.rewardAlive, rewardDead = p.rewardDead,
+                name = p.name, crime = (p.sponsored and not p.playerTarget) and ('%s (%s)'):format(locale(p.crime), p.sponsor) or locale(p.crime), rewardAlive = p.rewardAlive, rewardDead = p.rewardDead,
             }
         end
     end
@@ -120,7 +125,7 @@ local function endContract(src, reason, silent)
         Board[c.poster.id] = nil
     end
     Contracts[src] = nil
-    Cooldowns[c.cid] = reason ~= 'completed' and (os.time() + Config.AcceptCooldown) or nil
+    Cooldowns[c.cid] = (reason ~= 'completed' and reason ~= 'cancelled') and (os.time() + Config.AcceptCooldown) or nil
     if not silent then TriggerClientEvent('rsg-bountyhunter:client:endContract', src, reason) end
 end
 
@@ -160,6 +165,15 @@ local function getLeaderboard()
         if rows then leaderboardCache = { rows = rows, at = now } end
     end
     return leaderboardCache.rows
+end
+
+local function recordStats(cid, charName, alive, amount)
+    dbCall(MySQL.insert.await, [[
+        INSERT INTO rsg_bountyhunter (citizenid, name, completed, alive, dead, earned) VALUES (?, ?, 1, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE name = VALUES(name), completed = completed + 1, alive = alive + VALUES(alive),
+        dead = dead + VALUES(dead), earned = earned + VALUES(earned)
+    ]], { cid, charName, alive and 1 or 0, alive and 0 or 1, amount })
+    leaderboardCache.at = 0
 end
 
 ---------------------------------
@@ -207,9 +221,39 @@ local function accept(src, officeId, posterId)
 
     local poster = Board[posterId]
     if not poster or poster.taken then notify(src, locale('poster_gone'), 'error') return false end
+
+    -- reputation poster: the target is a real player
+    local targetPlayer
+    if poster.playerTarget then
+        if poster.playerTarget == cid then notify(src, locale('rep_own_bounty'), 'error') return false end
+        targetPlayer = RSGCore.Functions.GetPlayerByCitizenId(poster.playerTarget)
+        if not targetPlayer then notify(src, locale('poster_gone'), 'error') return false end
+        local g, tg = Player.PlayerData.gang, targetPlayer.PlayerData.gang
+        if RepCfg.BlockSameGang and g and tg and g.name and g.name ~= 'none' and g.name == tg.name then
+            notify(src, locale('rep_same_gang'), 'error')
+            return false
+        end
+    end
+
     poster.taken = true
     Contracts[src] = { poster = poster, cid = cid, expires = now + Config.ContractMinutes * 60 }
     fillBoard(false)
+
+    if poster.playerTarget then
+        local c = Contracts[src]
+        local r = math.floor((RepCfg.TrackRadius or 250.0) * 0.5)
+        c.playerTarget = poster.playerTarget
+        c.startedAt = now
+        c.offX, c.offY = math.random(-r, r), math.random(-r, r) -- fixed offset so the area isn't centred on the target
+        c.nextTrack = 0 -- the expiry loop sends the first search area within a few seconds
+        TriggerClientEvent('rsg-bountyhunter:client:startPlayerContract', src, { name = poster.name })
+        notify(src, locale('accepted', poster.name, Config.ContractMinutes), 'success')
+        BountyLog.Event('accepted', src, BountyLog.ContractFields(poster, {
+            { name = locale('wh_office'), value = locale(office.label) },
+            { name = locale('wh_time_limit'), value = locale('wh_minutes', Config.ContractMinutes) },
+        }))
+        return true
+    end
 
     local tier = Config.Tiers[poster.tier]
     TriggerClientEvent('rsg-bountyhunter:client:startContract', src, {
@@ -269,6 +313,149 @@ RegisterNetEvent('rsg-bountyhunter:server:registerTarget', function(netId)
     c.foundAt = os.time()
 end)
 
+---------------------------------
+-- reputation bounties (rsg-reputation)
+---------------------------------
+-- removes the poster of a player; a hunter holding it is told and released without a cooldown
+local function closeRepPoster(cid, reason)
+    local entry = RepPosters[cid]
+    if not entry then return end
+    RepPosters[cid] = nil
+    local key = reason == 'cleared' and 'rep_target_cleared' or reason == 'jailed' and 'rep_target_jailed' or 'rep_target_left'
+    for hsrc, c in pairs(Contracts) do
+        if c.playerTarget == cid then
+            notify(hsrc, locale(key, c.poster.name), 'warning')
+            endContract(hsrc, 'cancelled')
+        end
+    end
+    Board[entry.id] = nil
+end
+
+local function repReward(honor)
+    local over = math.max(0, RepCfg.Threshold - honor)
+    local alive = math.floor(math.min(RepCfg.MaxReward, RepCfg.BaseReward + over * RepCfg.PerPoint))
+    return alive, math.floor(alive * RepCfg.DeadMultiplier)
+end
+
+-- returns true, or false plus the reason ('jailed')
+local function repEligible(Player)
+    local pd = Player.PlayerData
+    local jobType = pd.job and pd.job.type
+    for _, t in ipairs(RepCfg.ExemptJobTypes or {}) do
+        if jobType == t then return false end
+    end
+    if RepCfg.SkipJailed and flag(pd.metadata and pd.metadata.injail) then return false, 'jailed' end
+    local cd = RepCooldowns[pd.citizenid]
+    if cd and cd > os.time() then return false end
+    return true
+end
+
+-- posts, updates or removes the poster of one player from their current honor
+local function evaluateRep(src)
+    if not RepCfg.Enabled or GetResourceState('rsg-reputation') ~= 'started' then return end
+    local Player = RSGCore.Functions.GetPlayer(src)
+    if not Player then return end
+    local cid = Player.PlayerData.citizenid
+    local honor = tonumber(exports['rsg-reputation']:GetHonor(src))
+    if not honor then return end
+
+    local ok, why = repEligible(Player)
+    local entry = RepPosters[cid]
+    if entry then
+        entry.src = src
+        if not ok or honor > RepCfg.ClearAbove then
+            closeRepPoster(cid, why == 'jailed' and 'jailed' or 'cleared')
+            if ok and RepCfg.NotifyTarget then notify(src, locale('rep_cleared'), 'success') end
+        else
+            local p = Board[entry.id]
+            if p and not p.taken then p.rewardAlive, p.rewardDead = repReward(honor) end
+        end
+        return
+    end
+
+    if not ok or honor > RepCfg.Threshold then return end
+    local alive, dead = repReward(honor)
+    local ci = Player.PlayerData.charinfo or {}
+    nextPosterId = nextPosterId + 1
+    Board[nextPosterId] = {
+        id = nextPosterId, tier = 3, name = ('%s %s'):format(ci.firstname or '?', ci.lastname or ''):gsub('%s+$', ''),
+        crime = 'crime_reputation', rewardAlive = alive, rewardDead = dead,
+        sponsored = true, expiresAt = math.huge, playerTarget = cid, -- sponsored: survives board re-rolls, returns when abandoned
+    }
+    RepPosters[cid] = { id = nextPosterId, src = src }
+    if RepCfg.NotifyTarget then notify(src, locale('rep_posted'), 'warning') end
+end
+
+-- the target is secured when dead (server metadata) or bound: cuffed (server metadata) or hogtied (asked of the target's own client)
+local function repTargetCondition(tsrc, TPlayer)
+    local meta = TPlayer.PlayerData.metadata or {}
+    if flag(meta.isdead) then return 'dead' end
+    if flag(meta.ishandcuffed) then return 'alive' end
+    local ok, hogtied = pcall(RSGCore.Functions.AwaitClientCallback, 'rsg-bountyhunter:client:isRestrained', tsrc, 3000)
+    if ok and hogtied == true then return 'alive' end
+    return nil
+end
+
+local function turnInPlayer(src, Player, office, c)
+    local targetCid = c.playerTarget
+    local TPlayer = RSGCore.Functions.GetPlayerByCitizenId(targetCid)
+    if not TPlayer then
+        closeRepPoster(targetCid, 'left')
+        return false
+    end
+    local tsrc = TPlayer.PlayerData.source
+    if RepCfg.SkipJailed and flag(TPlayer.PlayerData.metadata and TPlayer.PlayerData.metadata.injail) then
+        closeRepPoster(targetCid, 'jailed')
+        return false
+    end
+
+    local tped = GetPlayerPed(tsrc)
+    if not tped or tped == 0 or #(GetEntityCoords(tped) - office.coords.xyz) > Config.DeliverRadius then
+        notify(src, locale('target_not_here'), 'error')
+        return false
+    end
+    local secs = os.time() - (c.startedAt or os.time())
+    if secs < Config.MinHuntSeconds then
+        BountyLog.Event('exploit', src, { { name = locale('wh_check'), value = locale('wh_check_min_hunt') }, { name = locale('wh_target'), value = c.poster.name } },
+            locale('wh_reason_instant', secs, Config.MinHuntSeconds))
+        notify(src, locale('target_not_here'), 'error')
+        return false
+    end
+    local condition = repTargetCondition(tsrc, TPlayer)
+    if not condition then
+        notify(src, locale('rep_not_secured'), 'error')
+        return false
+    end
+    if not RSGCore.Functions.GetPlayerByCitizenId(targetCid) or Contracts[src] ~= c then return false end -- changed while waiting on the client
+
+    local alive = condition == 'alive'
+    local amount = alive and c.poster.rewardAlive or c.poster.rewardDead
+    local name = c.poster.name
+    local cid = Player.PlayerData.citizenid
+    local charName = ('%s %s'):format(Player.PlayerData.charinfo.firstname, Player.PlayerData.charinfo.lastname)
+    local logFields = BountyLog.ContractFields(c.poster, {
+        { name = locale('wh_condition'), value = locale(alive and 'ui_alive' or 'ui_dead') },
+        { name = locale('wh_paid'), value = ('$%s (%s)'):format(amount, Config.MoneyType) },
+        { name = locale('wh_office'), value = locale(office.label) },
+        { name = locale('wh_hunt_time'), value = locale('wh_minutes', math.floor(secs / 60)) },
+    })
+
+    endContract(src, 'completed') -- clears the contract and the poster before paying so it can't be claimed twice
+    RepPosters[targetCid] = nil
+    RepCooldowns[targetCid] = os.time() + (RepCfg.RepostCooldownMinutes or 120) * 60
+    Player.Functions.AddMoney(Config.MoneyType, amount, 'rsg-bountyhunter-reward')
+    recordStats(cid, charName, alive, amount)
+    notify(src, locale(alive and 'paid_alive' or 'paid_dead', name, amount), 'success')
+    if RepCfg.NotifyTarget then notify(tsrc, locale('rep_collected'), 'warning') end
+
+    if Config.Reputation.Enabled and GetResourceState('rsg-reputation') == 'started' then
+        exports['rsg-reputation']:ApplyAction(src, Config.Reputation.Action, Config.Reputation.Regions[office.id] or office.id)
+    end
+    BountyLog.Event('completed', src, logFields,
+        locale(alive and 'wh_turned_in_alive' or 'wh_turned_in_dead', charName, cid, name, amount))
+    return true
+end
+
 local function turnIn(src, officeId)
     local Player = RSGCore.Functions.GetPlayer(src)
     if not Player then return false end
@@ -278,6 +465,7 @@ local function turnIn(src, officeId)
 
     local c = Contracts[src]
     if not c then notify(src, locale('no_contract'), 'error') return false end
+    if c.playerTarget then return turnInPlayer(src, Player, office, c) end
     if not c.netId then notify(src, locale('target_not_here'), 'error') return false end
 
     local ent = getTargetEntity(c)
@@ -317,12 +505,7 @@ local function turnIn(src, officeId)
     Player.Functions.AddMoney(Config.MoneyType, amount, 'rsg-bountyhunter-reward')
     if closedPoster.ref then TriggerEvent('rsg-bountyhunter:server:posterClosed', closedPoster.ref, 'completed', amount) end
 
-    dbCall(MySQL.insert.await, [[
-        INSERT INTO rsg_bountyhunter (citizenid, name, completed, alive, dead, earned) VALUES (?, ?, 1, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE name = VALUES(name), completed = completed + 1, alive = alive + VALUES(alive),
-        dead = dead + VALUES(dead), earned = earned + VALUES(earned)
-    ]], { cid, charName, alive and 1 or 0, alive and 0 or 1, amount })
-    leaderboardCache.at = 0
+    recordStats(cid, charName, alive, amount)
 
     notify(src, locale(alive and 'paid_alive' or 'paid_dead', name, amount), 'success')
 
@@ -373,6 +556,7 @@ end)
 CreateThread(function()
     fillBoard(true)
     local lastRefresh = os.time()
+    local lastSweep = os.time()
     while true do
         Wait(15000)
         local now = os.time()
@@ -391,6 +575,26 @@ CreateThread(function()
             if p.sponsored and not p.taken and p.expiresAt <= now then
                 Board[id] = nil
                 TriggerEvent('rsg-bountyhunter:server:posterClosed', p.ref, 'expired', 0)
+            end
+        end
+        if RepCfg.Enabled then
+            -- the hunter's search area follows the target (offset, so it never points at the exact spot)
+            for hsrc, c in pairs(Contracts) do
+                if c.playerTarget and now >= (c.nextTrack or 0) then
+                    c.nextTrack = now + math.max(15, RepCfg.TrackSeconds or 30)
+                    local TPlayer = RSGCore.Functions.GetPlayerByCitizenId(c.playerTarget)
+                    local tped = TPlayer and GetPlayerPed(TPlayer.PlayerData.source)
+                    if tped and tped ~= 0 then
+                        local pos = GetEntityCoords(tped)
+                        TriggerClientEvent('rsg-bountyhunter:client:trackArea', hsrc,
+                            { x = pos.x + c.offX, y = pos.y + c.offY, z = pos.z, radius = RepCfg.TrackRadius or 250.0 })
+                    end
+                end
+            end
+            -- re-check everyone: jail, honor decay and cooldown changes raise no honor event
+            if now - lastSweep >= (RepCfg.SweepSeconds or 60) then
+                lastSweep = now
+                for _, id in ipairs(GetPlayers()) do evaluateRep(tonumber(id)) end
             end
         end
         if now - lastRefresh >= Config.RefreshMinutes * 60 then
@@ -422,13 +626,21 @@ end)
 
 -- character logout / switch / disconnect: the client loses its contract state, so drop it server-side too.
 -- counts as an abandon (cooldown applies) so relogging can't be used to re-roll contracts.
+local function dropRepPoster(src)
+    for cid, e in pairs(RepPosters) do
+        if e.src == src then closeRepPoster(cid, 'left') end
+    end
+end
+
 AddEventHandler('RSGCore:Server:OnPlayerUnload', function(src)
     endContract(src, 'abandoned', true)
+    dropRepPoster(src)
 end)
 
 AddEventHandler('playerDropped', function()
     local src = source
     endContract(src, 'abandoned', true)
+    dropRepPoster(src)
     BoardThrottle[src] = nil
 end)
 
@@ -438,4 +650,22 @@ AddEventHandler('onResourceStop', function(res)
         local ent = getTargetEntity(c)
         if ent then DeleteEntity(ent) end
     end
+end)
+
+---------------------------------
+-- reputation bounties: triggers and export
+---------------------------------
+-- server-side event from rsg-reputation (AddEventHandler, so clients cannot fire it)
+AddEventHandler('rsg-reputation:server:honorChanged', function(src)
+    evaluateRep(src)
+end)
+
+AddEventHandler('RSGCore:Server:PlayerLoaded', function(Player)
+    local src = Player and Player.PlayerData and Player.PlayerData.source
+    if src then SetTimeout(5000, function() evaluateRep(src) end) end -- wait for rsg-reputation to load the character
+end)
+
+-- true while the character has a reputation poster on the board
+exports('IsReputationWanted', function(citizenid)
+    return RepPosters[citizenid] ~= nil
 end)

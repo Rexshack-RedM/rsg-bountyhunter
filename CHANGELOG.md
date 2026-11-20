@@ -2,6 +2,13 @@
 
 All notable changes to rsg-bountyhunter. Newest first.
 
+## 3.3.0
+
+### Added
+- Reputation bounties (optional, needs rsg-reputation): a player whose honor falls to `Config.ReputationBounty.Threshold` is posted on the board automatically. A hunter takes the poster, follows a moving search area on the map and brings the player to a sheriff's office dead, hogtied or cuffed to collect. The reward scales with how far honor is below the threshold. The poster is removed when honor recovers, the player is jailed or leaves, or the bounty is collected (with a repost cooldown).
+- `IsReputationWanted(citizenid)` server export.
+- New locale keys (`crime_reputation`, `rep_*`) in all 11 languages.
+
 ## 3.2.0
 
 ### Added
